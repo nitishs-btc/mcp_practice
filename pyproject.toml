@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "philter-mcp-server"
+version = "0.1.0"
+description = "Standalone MCP server that returns PHI/PII entity spans for backend redaction workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27.0,<1.0.0",
+  "langchain>=1.0.0,<2.0.0",
+  "langchain-mcp-adapters>=0.2.2,<1.0.0",
+  "langgraph>=1.0.0,<2.0.0",
+  "pydantic>=2.8.0,<3.0.0",
+  "pydantic-settings>=2.4.0,<3.0.0",
+  "starlette>=0.37.0,<1.0.0",
+  "uvicorn>=0.30.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0.0",
+]
+
+[project.scripts]
+philter-agent-api = "philter_mcp_server.__main__:main"
+philter-mcp-server = "philter_mcp_server.mcp_main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
