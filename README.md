@@ -6,14 +6,14 @@ The service exposes one HTTP endpoint for other projects to call:
 
 - `POST /redact`
 
-That endpoint sends text to the upstream Philter MCP server through `langchain-mcp-adapters`, then normalizes the returned spans before responding.
+That endpoint sends text to the upstream Philter MCP server through `langchain-mcp-adapters`, then returns the upstream redacted text directly.
 
 ## Flow
 
 1. Receive a JSON payload with `text`.
 2. Load the upstream `redact_text` MCP tool through `MultiServerMCPClient`.
-3. Run a small LangGraph workflow to prepare, invoke, normalize, and finish the request.
-4. Return entity spans only.
+3. Run a small LangGraph workflow to prepare, redact, and finish the request.
+4. Return `redacted_text` only.
 
 ## Project Structure
 
@@ -97,6 +97,12 @@ uv run philter-agent-api
 The public API listens on `http://localhost:8000`.
 The MCP tool server listens on `http://localhost:8001/mcp`.
 
+If you want both services from one command, run:
+
+```bash
+uv run philter-stack
+```
+
 ## API Contract
 
 Request:
@@ -111,20 +117,7 @@ Response:
 
 ```json
 {
-  "entities": [
-    {
-      "entity_type": "name",
-      "start": 14,
-      "end": 28,
-      "confidence": 0.95
-    },
-    {
-      "entity_type": "email",
-      "start": 36,
-      "end": 57,
-      "confidence": 0.99
-    }
-  ]
+  "redacted_text": "{{{REDACTED-first-name}}} {{{REDACTED-first-name}}} lives in {{{REDACTED-zip-code}}} and his SSN was {{{REDACTED-ssn}}}"
 }
 ```
 

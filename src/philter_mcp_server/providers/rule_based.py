@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from philter_mcp_server.models import EntitySpan
+from philter_mcp_server.detection_models import EntitySpan
 from philter_mcp_server.providers.base import DetectionProvider
 
 
@@ -74,3 +74,23 @@ class RuleBasedDetectionProvider(DetectionProvider):
             deduplicated.values(),
             key=lambda entity: (entity.start, entity.end, entity.entity_type),
         )
+
+    async def redact_text(self, text: str) -> str:
+        redacted_text = text
+        entities = await self.detect_entities(text)
+
+        for entity in sorted(entities, key=lambda item: (item.start, item.end), reverse=True):
+            redacted_text = (
+                redacted_text[: entity.start]
+                + f"{{{{{{REDACTED-{entity.entity_type}}}}}}}"
+                + redacted_text[entity.end :]
+            )
+
+        return redacted_text
+
+    async def health(self) -> dict[str, object]:
+        return {
+            "provider": self.name,
+            "status": "ok",
+            "mode": "detect_entities+redact_text",
+        }

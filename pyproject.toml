@@ -27,6 +27,7 @@ dev = [
 [project.scripts]
 philter-agent-api = "philter_mcp_server.__main__:main"
 philter-mcp-server = "philter_mcp_server.mcp_main:main"
+philter-stack = "philter_mcp_server.stack_main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

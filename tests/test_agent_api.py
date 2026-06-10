@@ -4,54 +4,36 @@ from starlette.testclient import TestClient
 
 from philter_mcp_server.agent.app import create_app
 from philter_mcp_server.agent.models import RedactionResult
-from philter_mcp_server.models import EntitySpan
 
 
 class FakePipeline:
     async def redact(self, text: str) -> RedactionResult:
-        del text
+        assert text == (
+            "George Washington lives in 90210 and his SSN was 123-45-6789"
+        )
         return RedactionResult(
-            entities=[
-                EntitySpan(
-                    entity_type="name",
-                    start=14,
-                    end=28,
-                    confidence=0.95,
-                ),
-                EntitySpan(
-                    entity_type="email",
-                    start=36,
-                    end=57,
-                    confidence=0.99,
-                ),
-            ]
+            redacted_text=(
+                "{{{REDACTED-first-name}}} {{{REDACTED-first-name}}} lives in "
+                "{{{REDACTED-zip-code}}} and his SSN was {{{REDACTED-ssn}}}"
+            )
         )
 
 
-def test_redact_endpoint_returns_entity_spans() -> None:
+def test_redact_endpoint_returns_redacted_text() -> None:
     app = create_app(pipeline=FakePipeline())
 
     with TestClient(app) as client:
         response = client.post(
             "/redact",
-            json={"text": "Patient Name: Example Person\nEmail: demo.user@example.com"},
+            json={
+                "text": "George Washington lives in 90210 and his SSN was 123-45-6789"
+            },
         )
 
     assert response.status_code == 200
     assert response.json() == {
-        "entities": [
-            {
-                "entity_type": "name",
-                "start": 14,
-                "end": 28,
-                "confidence": 0.95,
-            },
-            {
-                "entity_type": "email",
-                "start": 36,
-                "end": 57,
-                "confidence": 0.99,
-            },
-        ]
+        "redacted_text": (
+            "{{{REDACTED-first-name}}} {{{REDACTED-first-name}}} lives in "
+            "{{{REDACTED-zip-code}}} and his SSN was {{{REDACTED-ssn}}}"
+        )
     }
-

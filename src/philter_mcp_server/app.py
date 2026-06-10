@@ -23,8 +23,8 @@ provider = build_provider(settings)
 mcp = FastMCP(
     name="Philter Detector MCP",
     instructions=(
-        "Detect PHI/PII spans for upstream masking systems. "
-        "The redact_text tool returns entity offsets only and does not redact text."
+        "Redact PHI/PII by calling the upstream Philter API. "
+        "The redact_text tool returns redacted text, not spans."
     ),
     stateless_http=True,
     json_response=True,
@@ -34,14 +34,14 @@ mcp = FastMCP(
 
 @mcp.tool(name="redact_text")
 async def redact_text(text: str, ctx: Context) -> RedactionResponse:
-    """Detect PHI/PII spans in text and return character offsets only."""
+    """Redact PHI/PII in text and return the masked output."""
 
     started_at = time.perf_counter()
     request_id = str(ctx.request_id)
     text_length = len(text)
 
     try:
-        entities = await provider.detect_entities(text)
+        redacted_text = await provider.redact_text(text)
     except ProviderError as exc:
         duration_ms = (time.perf_counter() - started_at) * 1000
         logger.error(
@@ -52,18 +52,17 @@ async def redact_text(text: str, ctx: Context) -> RedactionResponse:
             duration_ms,
             exc.__class__.__name__,
         )
-        raise RuntimeError("Entity detection failed.") from exc
+        raise RuntimeError("Text redaction failed.") from exc
 
     duration_ms = (time.perf_counter() - started_at) * 1000
     logger.info(
-        "redact_text_completed request_id=%s provider=%s text_length=%d entity_count=%d duration_ms=%.2f",
+        "redact_text_completed request_id=%s provider=%s text_length=%d duration_ms=%.2f",
         request_id,
         provider.name,
         text_length,
-        len(entities),
         duration_ms,
     )
-    return RedactionResponse(entities=entities)
+    return RedactionResponse(redacted_text=redacted_text)
 
 
 @mcp.tool(name="health")
@@ -78,10 +77,12 @@ async def health(ctx: Context) -> HealthResponse:
 async def health_endpoint(_request) -> JSONResponse:
     """Simple HTTP health endpoint."""
 
+    details = await provider.health()
     return JSONResponse(
         {
             "status": "ok",
             "provider": provider.name,
+            "mode": details.get("mode", "unknown"),
         }
     )
 

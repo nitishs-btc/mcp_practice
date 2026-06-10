@@ -8,7 +8,6 @@ from typing import Any, TYPE_CHECKING, TypedDict
 
 from philter_mcp_server.agent.config import AgentSettings
 from philter_mcp_server.agent.models import RedactionResult
-from philter_mcp_server.models import EntitySpan
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
@@ -18,9 +17,8 @@ class RedactionState(TypedDict, total=False):
     """State shared across the LangGraph workflow."""
 
     text: str
-    should_detect: bool
     raw_result: Any
-    entities: list[EntitySpan]
+    redacted_text: str
 
 
 @dataclass(slots=True)
@@ -59,11 +57,10 @@ class RedactionPipeline:
         return pipeline
 
     async def redact(self, text: str) -> RedactionResult:
-        """Run the workflow and return normalized entity spans."""
+        """Run the workflow and return redacted text."""
 
         result = await self.graph.ainvoke({"text": text})
-        entities = result.get("entities", [])
-        return RedactionResult(entities=entities)
+        return RedactionResult(redacted_text=result.get("redacted_text", ""))
 
     def _build_graph(self) -> Any:
         try:
@@ -77,8 +74,7 @@ class RedactionPipeline:
 
         workflow = StateGraph(RedactionState)
         workflow.add_node("prepare", self._prepare)
-        workflow.add_node("detect", self._detect)
-        workflow.add_node("normalize", self._normalize)
+        workflow.add_node("redact", self._redact)
         workflow.add_node("finish", self._finish)
 
         workflow.add_edge(START, "prepare")
@@ -86,12 +82,11 @@ class RedactionPipeline:
             "prepare",
             self._route_from_prepare,
             {
-                "detect": "detect",
+                "redact": "redact",
                 "finish": "finish",
             },
         )
-        workflow.add_edge("detect", "normalize")
-        workflow.add_edge("normalize", "finish")
+        workflow.add_edge("redact", "finish")
         workflow.add_edge("finish", END)
         return workflow.compile()
 
@@ -108,67 +103,81 @@ class RedactionPipeline:
 
     async def _prepare(self, state: RedactionState) -> dict[str, Any]:
         text = state["text"].strip()
-        return {
-            "text": text,
-            "should_detect": bool(text),
-            "entities": [],
-        }
+        return {"text": text, "redacted_text": ""}
 
     @staticmethod
     def _route_from_prepare(state: RedactionState) -> str:
-        return "detect" if state.get("should_detect") else "finish"
+        return "redact" if state.get("text") else "finish"
 
-    async def _detect(self, state: RedactionState) -> dict[str, Any]:
+    async def _redact(self, state: RedactionState) -> dict[str, Any]:
         tool_result = await self.redact_tool.ainvoke({"text": state["text"]})
-        return {"raw_result": tool_result}
-
-    async def _normalize(self, state: RedactionState) -> dict[str, Any]:
-        structured = self._extract_structured_content(state.get("raw_result"))
-        entities = self._parse_entities(structured)
-        return {"entities": entities}
+        redacted_text = self._extract_redacted_text(tool_result)
+        return {"raw_result": tool_result, "redacted_text": redacted_text}
 
     async def _finish(self, state: RedactionState) -> dict[str, Any]:
-        return {"entities": state.get("entities", [])}
+        return {"redacted_text": state.get("redacted_text", "")}
 
-    def _extract_structured_content(self, raw_result: Any) -> dict[str, Any]:
+    def _extract_redacted_text(self, raw_result: Any) -> str:
         if raw_result is None:
-            return {}
+            return ""
+
+        if isinstance(raw_result, list):
+            for item in raw_result:
+                redacted_text = self._extract_redacted_text(item)
+                if redacted_text:
+                    return redacted_text
+            return ""
+
+        if isinstance(raw_result, str):
+            parsed = self._maybe_parse_json(raw_result)
+            if isinstance(parsed, dict):
+                return self._extract_redacted_text(parsed)
+            if isinstance(parsed, list):
+                return self._extract_redacted_text(parsed)
+            return raw_result
 
         if isinstance(raw_result, dict):
-            nested = raw_result.get("structured_content") or raw_result.get(
-                "structuredContent"
-            )
-            if isinstance(nested, dict):
-                return nested
-            if "entities" in raw_result:
-                return raw_result
+            for key in ("redacted_text", "redactedText"):
+                value = raw_result.get(key)
+                if isinstance(value, str):
+                    return value
 
-        artifact = getattr(raw_result, "artifact", None)
-        if isinstance(artifact, dict):
-            nested = artifact.get("structured_content") or artifact.get(
-                "structuredContent"
-            )
-            if isinstance(nested, dict):
-                return nested
-            return artifact
+            for key in ("structured_content", "structuredContent", "content", "artifact"):
+                nested = raw_result.get(key)
+                if nested is not None:
+                    redacted_text = self._extract_redacted_text(nested)
+                    if redacted_text:
+                        return redacted_text
 
-        structured_content = getattr(raw_result, "structured_content", None)
-        if isinstance(structured_content, dict):
-            return structured_content
+            return ""
 
         content = getattr(raw_result, "content", None)
-        if isinstance(content, dict):
-            return content
-        if isinstance(content, str):
-            parsed = self._maybe_parse_json(content)
-            if isinstance(parsed, dict):
-                return parsed
+        if content is not None:
+            redacted_text = self._extract_redacted_text(content)
+            if redacted_text:
+                return redacted_text
+
+        structured_content = getattr(raw_result, "structured_content", None)
+        if structured_content is not None:
+            redacted_text = self._extract_redacted_text(structured_content)
+            if redacted_text:
+                return redacted_text
+
+        artifact = getattr(raw_result, "artifact", None)
+        if artifact is not None:
+            redacted_text = self._extract_redacted_text(artifact)
+            if redacted_text:
+                return redacted_text
 
         parsed = self._maybe_parse_json(raw_result)
         if isinstance(parsed, dict):
+            return self._extract_redacted_text(parsed)
+        if isinstance(parsed, list):
+            return self._extract_redacted_text(parsed)
+        if isinstance(parsed, str):
             return parsed
 
-        return {}
+        return str(raw_result)
 
     @staticmethod
     def _maybe_parse_json(value: Any) -> Any:
@@ -179,104 +188,3 @@ class RedactionPipeline:
             return json.loads(value)
         except ValueError:
             return value
-
-    def _parse_entities(self, payload: dict[str, Any]) -> list[EntitySpan]:
-        raw_entities = payload.get("entities")
-        if not isinstance(raw_entities, list):
-            raw_entities = payload.get("spans")
-        if not isinstance(raw_entities, list):
-            raw_entities = []
-
-        entities: list[EntitySpan] = []
-        for item in raw_entities:
-            entity = self._coerce_entity(item)
-            if entity is not None:
-                entities.append(entity)
-
-        deduplicated: dict[tuple[str, int, int], EntitySpan] = {}
-        for entity in entities:
-            key = (entity.entity_type, entity.start, entity.end)
-            deduplicated[key] = entity
-
-        return sorted(
-            deduplicated.values(),
-            key=lambda entity: (entity.start, entity.end, entity.entity_type),
-        )
-
-    def _coerce_entity(self, item: Any) -> EntitySpan | None:
-        if isinstance(item, EntitySpan):
-            return item
-        if not isinstance(item, dict):
-            return None
-
-        entity_type = self._normalize_entity_type(
-            item.get("entity_type")
-            or item.get("entityType")
-            or item.get("type")
-            or item.get("label")
-            or item.get("classification")
-        )
-        start = self._coerce_int(
-            item.get("start")
-            or item.get("begin")
-            or item.get("beginOffset")
-            or item.get("startOffset")
-        )
-        end = self._coerce_int(
-            item.get("end")
-            or item.get("stop")
-            or item.get("endOffset")
-            or item.get("stopOffset")
-        )
-        confidence = self._coerce_float(
-            item.get("confidence")
-            or item.get("score")
-            or item.get("probability")
-            or 0.90
-        )
-
-        if entity_type and start is not None and end is not None and end >= start:
-            return EntitySpan(
-                entity_type=entity_type,
-                start=start,
-                end=end,
-                confidence=max(0.0, min(confidence, 1.0)),
-            )
-
-        return None
-
-    @staticmethod
-    def _normalize_entity_type(value: Any) -> str | None:
-        if not value:
-            return None
-
-        normalized = str(value).strip().lower().replace("_", "-").replace(" ", "-")
-        aliases = {
-            "person": "name",
-            "person-name": "name",
-            "patient-name": "name",
-            "full-name": "name",
-            "mail": "email",
-            "e-mail": "email",
-            "email-address": "email",
-            "phone-number": "phone",
-            "telephone": "phone",
-            "social-security-number": "ssn",
-        }
-        return aliases.get(normalized, normalized)
-
-    @staticmethod
-    def _coerce_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _coerce_float(value: Any) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.90
